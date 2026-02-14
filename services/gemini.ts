@@ -2,10 +2,15 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { VerificationResult } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
 export const analyzeLiveness = async (base64Image: string, challengesText: string): Promise<VerificationResult> => {
   try {
+    // Initialize inside the call to ensure the latest process.env is captured
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+    
+    if (!process.env.API_KEY) {
+      throw new Error("SEC_VAULT_MISSING_KEY: Gemini API Key not found in environment.");
+    }
+
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: {
@@ -48,14 +53,17 @@ export const analyzeLiveness = async (base64Image: string, challengesText: strin
       }
     });
 
-    return JSON.parse(response.text.trim()) as VerificationResult;
+    const text = response.text;
+    if (!text) throw new Error("Empty response from AI engine");
+    
+    return JSON.parse(text.trim()) as VerificationResult;
   } catch (error) {
-    console.error("Gemini analysis failed:", error);
+    console.error("Forensic analysis failure:", error);
     return {
       isReal: false,
       confidence: 0,
-      sentiment: 'unknown',
-      reasoning: 'AI security pipeline timed out.'
+      sentiment: 'rigid',
+      reasoning: 'AI pipeline handshake failed. Check system logs for API credentials.'
     };
   }
 };

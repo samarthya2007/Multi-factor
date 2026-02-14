@@ -5,7 +5,7 @@ import { CHALLENGE_BANK } from '../constants';
 import ChallengeOverlay from './ChallengeOverlay';
 import IdentityForm from './IdentityForm';
 import { analyzeLiveness } from '../services/gemini';
-import { AlertTriangle, ShieldCheck, Fingerprint, Zap } from 'lucide-react';
+import { AlertTriangle, ShieldCheck, Fingerprint, Zap, Loader2 } from 'lucide-react';
 
 interface Props {
   status: VerificationStatus;
@@ -22,64 +22,77 @@ const WebcamScanner: React.FC<Props> = ({ status, setStatus, onComplete }) => {
   const [progress, setProgress] = useState(0);
   const [identity, setIdentity] = useState<UserIdentity | null>(null);
   const [showFlash, setShowFlash] = useState(false);
+  const [engineReady, setEngineReady] = useState(false);
 
-  // Initial State Setup
   useEffect(() => {
     if (status === VerificationStatus.IDLE && !identity) {
       setStatus(VerificationStatus.COLLECTING_DATA);
     }
   }, [status, identity, setStatus]);
 
-  // Initialize MediaPipe FaceMesh
   useEffect(() => {
     if (!videoRef.current || !canvasRef.current) return;
 
-    const faceMesh = new (window as any).FaceMesh({
-      locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
-    });
-
-    faceMesh.setOptions({
-      maxNumFaces: 1,
-      refineLandmarks: true,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5,
-    });
-
-    faceMesh.onResults((results: any) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      
-      if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
-        setIsFaceDetected(true);
-        const landmarks = results.multiFaceLandmarks[0];
-        (window as any).drawConnectors(ctx, landmarks, (window as any).FACEMESH_TESSELATION, {color: '#3b82f633', lineWidth: 1});
-        (window as any).drawConnectors(ctx, landmarks, (window as any).FACEMESH_RIGHT_EYE, {color: '#3b82f6', lineWidth: 1});
-        (window as any).drawConnectors(ctx, landmarks, (window as any).FACEMESH_LEFT_EYE, {color: '#3b82f6', lineWidth: 1});
-        (window as any).drawConnectors(ctx, landmarks, (window as any).FACEMESH_LIPS, {color: '#6366f1', lineWidth: 1});
+    // Defensive check for MediaPipe global scripts
+    const checkEngine = () => {
+      if ((window as any).FaceMesh && (window as any).Camera) {
+        setEngineReady(true);
+        initBiometrics();
       } else {
-        setIsFaceDetected(false);
+        setTimeout(checkEngine, 500);
       }
-    });
-
-    const camera = new (window as any).Camera(videoRef.current, {
-      onFrame: async () => {
-        if (videoRef.current) {
-          await faceMesh.send({image: videoRef.current});
-        }
-      },
-      width: 640,
-      height: 480,
-    });
-    camera.start();
-
-    return () => {
-      camera.stop();
-      faceMesh.close();
     };
+
+    const initBiometrics = () => {
+      const faceMesh = new (window as any).FaceMesh({
+        locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
+      });
+
+      faceMesh.setOptions({
+        maxNumFaces: 1,
+        refineLandmarks: true,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+
+      faceMesh.onResults((results: any) => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+          setIsFaceDetected(true);
+          const landmarks = results.multiFaceLandmarks[0];
+          (window as any).drawConnectors(ctx, landmarks, (window as any).FACEMESH_TESSELATION, {color: '#3b82f633', lineWidth: 1});
+          (window as any).drawConnectors(ctx, landmarks, (window as any).FACEMESH_RIGHT_EYE, {color: '#3b82f6', lineWidth: 1});
+          (window as any).drawConnectors(ctx, landmarks, (window as any).FACEMESH_LEFT_EYE, {color: '#3b82f6', lineWidth: 1});
+          (window as any).drawConnectors(ctx, landmarks, (window as any).FACEMESH_LIPS, {color: '#6366f1', lineWidth: 1});
+        } else {
+          setIsFaceDetected(false);
+        }
+      });
+
+      const camera = new (window as any).Camera(videoRef.current, {
+        onFrame: async () => {
+          if (videoRef.current) {
+            await faceMesh.send({image: videoRef.current});
+          }
+        },
+        width: 640,
+        height: 480,
+      });
+      camera.start();
+
+      return () => {
+        camera.stop();
+        faceMesh.close();
+      };
+    };
+
+    checkEngine();
   }, []);
 
   const handleIdentitySubmit = (data: UserIdentity) => {
@@ -104,14 +117,10 @@ const WebcamScanner: React.FC<Props> = ({ status, setStatus, onComplete }) => {
     } else {
       setProgress(100);
       setStatus(VerificationStatus.PROCESSING);
-      
-      // Trigger Chroma-Flash reflection check
       setShowFlash(true);
       
-      // Wait for flash to register on camera exposure (approx 500ms)
       setTimeout(async () => {
-        const canvas = canvasRef.current;
-        if (canvas && videoRef.current) {
+        if (videoRef.current) {
           const offscreen = document.createElement('canvas');
           offscreen.width = 640;
           offscreen.height = 480;
@@ -123,7 +132,6 @@ const WebcamScanner: React.FC<Props> = ({ status, setStatus, onComplete }) => {
             setShowFlash(false);
             onComplete(result.isReal);
           } catch (error) {
-            console.error("Liveness check failed", error);
             setShowFlash(false);
             onComplete(false);
           }
@@ -142,22 +150,28 @@ const WebcamScanner: React.FC<Props> = ({ status, setStatus, onComplete }) => {
     return () => clearTimeout(timer);
   }, [status, currentChallengeIdx, handleNextChallenge]);
 
+  if (!engineReady && status !== VerificationStatus.COLLECTING_DATA) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full w-full bg-black space-y-4">
+        <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
+        <p className="text-xs text-zinc-500 mono uppercase tracking-widest">Loading Biometric Sub-Systems...</p>
+      </div>
+    );
+  }
+
   return (
     <div className="relative w-full h-full aspect-video bg-black flex items-center justify-center group overflow-hidden">
       <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover grayscale opacity-60" playsInline muted />
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-cover pointer-events-none" width={640} height={480} />
       
-      {/* Chroma-Flash Overlay */}
       <div className={`absolute inset-0 z-40 transition-opacity duration-300 pointer-events-none ${showFlash ? 'opacity-80 bg-blue-500' : 'opacity-0'}`} />
 
       {status === VerificationStatus.SCANNING && <div className="scanner-line pointer-events-none" />}
 
-      {/* 0. Identity Data Collection */}
       {status === VerificationStatus.COLLECTING_DATA && (
         <IdentityForm onSubmit={handleIdentitySubmit} />
       )}
 
-      {/* 1. Landing UI (Camera Ready) */}
       {status === VerificationStatus.IDLE && identity && (
         <div className="z-10 text-center space-y-6 max-w-sm px-6 animate-in fade-in duration-500">
           <div className="mx-auto w-20 h-20 bg-blue-600/20 rounded-full flex items-center justify-center border border-blue-500/50 animate-pulse">
@@ -177,7 +191,6 @@ const WebcamScanner: React.FC<Props> = ({ status, setStatus, onComplete }) => {
         </div>
       )}
 
-      {/* 2. Scanning / Processing UI */}
       {status === VerificationStatus.SCANNING && challenges[currentChallengeIdx] && (
         <ChallengeOverlay 
           challenge={challenges[currentChallengeIdx]} 
@@ -201,7 +214,6 @@ const WebcamScanner: React.FC<Props> = ({ status, setStatus, onComplete }) => {
         </div>
       )}
 
-      {/* 3. Final Result UI */}
       {(status === VerificationStatus.SUCCESS || status === VerificationStatus.FAILED) && (
         <div className="z-10 animate-in fade-in zoom-in duration-300">
           {status === VerificationStatus.SUCCESS ? (
