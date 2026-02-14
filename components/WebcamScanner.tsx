@@ -5,7 +5,7 @@ import { CHALLENGE_BANK } from '../constants';
 import ChallengeOverlay from './ChallengeOverlay';
 import IdentityForm from './IdentityForm';
 import { analyzeLiveness } from '../services/gemini';
-import { AlertTriangle, ShieldCheck, Fingerprint, Zap, Loader2 } from 'lucide-react';
+import { AlertTriangle, ShieldCheck, Fingerprint, Zap, Loader2, CameraOff } from 'lucide-react';
 
 interface Props {
   status: VerificationStatus;
@@ -22,7 +22,7 @@ const WebcamScanner: React.FC<Props> = ({ status, setStatus, onComplete }) => {
   const [progress, setProgress] = useState(0);
   const [identity, setIdentity] = useState<UserIdentity | null>(null);
   const [showFlash, setShowFlash] = useState(false);
-  const [engineReady, setEngineReady] = useState(false);
+  const [engineState, setEngineState] = useState<'loading' | 'ready' | 'error' | 'denied'>('loading');
 
   useEffect(() => {
     if (status === VerificationStatus.IDLE && !identity) {
@@ -31,68 +31,95 @@ const WebcamScanner: React.FC<Props> = ({ status, setStatus, onComplete }) => {
   }, [status, identity, setStatus]);
 
   useEffect(() => {
-    if (!videoRef.current || !canvasRef.current) return;
+    let camera: any = null;
+    let faceMesh: any = null;
+    let timeoutId: any = null;
 
-    // Defensive check for MediaPipe global scripts
     const checkEngine = () => {
-      if ((window as any).FaceMesh && (window as any).Camera) {
-        setEngineReady(true);
-        initBiometrics();
+      // Robust global resolution
+      const FaceMeshCtor = (window as any).FaceMesh;
+      const CameraCtor = (window as any).Camera;
+
+      if (FaceMeshCtor && CameraCtor) {
+        initBiometrics(FaceMeshCtor, CameraCtor);
       } else {
-        setTimeout(checkEngine, 500);
+        timeoutId = setTimeout(checkEngine, 500);
       }
     };
 
-    const initBiometrics = () => {
-      const faceMesh = new (window as any).FaceMesh({
-        locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
-      });
+    const initBiometrics = (FaceMeshCtor: any, CameraCtor: any) => {
+      try {
+        faceMesh = new FaceMeshCtor({
+          locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
+        });
 
-      faceMesh.setOptions({
-        maxNumFaces: 1,
-        refineLandmarks: true,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5,
-      });
+        faceMesh.setOptions({
+          maxNumFaces: 1,
+          refineLandmarks: true,
+          minDetectionConfidence: 0.5,
+          minTrackingConfidence: 0.5,
+        });
 
-      faceMesh.onResults((results: any) => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
+        faceMesh.onResults((results: any) => {
+          const canvas = canvasRef.current;
+          if (!canvas) return;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return;
 
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        
-        if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
-          setIsFaceDetected(true);
-          const landmarks = results.multiFaceLandmarks[0];
-          (window as any).drawConnectors(ctx, landmarks, (window as any).FACEMESH_TESSELATION, {color: '#3b82f633', lineWidth: 1});
-          (window as any).drawConnectors(ctx, landmarks, (window as any).FACEMESH_RIGHT_EYE, {color: '#3b82f6', lineWidth: 1});
-          (window as any).drawConnectors(ctx, landmarks, (window as any).FACEMESH_LEFT_EYE, {color: '#3b82f6', lineWidth: 1});
-          (window as any).drawConnectors(ctx, landmarks, (window as any).FACEMESH_LIPS, {color: '#6366f1', lineWidth: 1});
-        } else {
-          setIsFaceDetected(false);
-        }
-      });
-
-      const camera = new (window as any).Camera(videoRef.current, {
-        onFrame: async () => {
-          if (videoRef.current) {
-            await faceMesh.send({image: videoRef.current});
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          
+          if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+            setIsFaceDetected(true);
+            const landmarks = results.multiFaceLandmarks[0];
+            if ((window as any).drawConnectors) {
+              (window as any).drawConnectors(ctx, landmarks, (window as any).FACEMESH_TESSELATION, {color: '#3b82f633', lineWidth: 1});
+              (window as any).drawConnectors(ctx, landmarks, (window as any).FACEMESH_RIGHT_EYE, {color: '#3b82f6', lineWidth: 1});
+              (window as any).drawConnectors(ctx, landmarks, (window as any).FACEMESH_LEFT_EYE, {color: '#3b82f6', lineWidth: 1});
+              (window as any).drawConnectors(ctx, landmarks, (window as any).FACEMESH_LIPS, {color: '#6366f1', lineWidth: 1});
+            }
+          } else {
+            setIsFaceDetected(false);
           }
-        },
-        width: 640,
-        height: 480,
-      });
-      camera.start();
+        });
 
-      return () => {
-        camera.stop();
-        faceMesh.close();
-      };
+        if (videoRef.current) {
+          camera = new CameraCtor(videoRef.current, {
+            onFrame: async () => {
+              if (videoRef.current && faceMesh) {
+                await faceMesh.send({image: videoRef.current});
+              }
+            },
+            width: 640,
+            height: 480,
+          });
+          camera.start()
+            .then(() => setEngineState('ready'))
+            .catch((err: any) => {
+              console.error("Camera denied:", err);
+              setEngineState('denied');
+            });
+        }
+      } catch (e) {
+        console.error("Biometric init failed:", e);
+        setEngineState('error');
+      }
     };
 
+    // Fail-safe timeout
+    const failSafe = setTimeout(() => {
+      if (engineState === 'loading') {
+        setEngineState('error');
+      }
+    }, 15000);
+
     checkEngine();
+
+    return () => {
+      clearTimeout(timeoutId);
+      clearTimeout(failSafe);
+      if (camera) camera.stop();
+      if (faceMesh) faceMesh.close();
+    };
   }, []);
 
   const handleIdentitySubmit = (data: UserIdentity) => {
@@ -136,7 +163,7 @@ const WebcamScanner: React.FC<Props> = ({ status, setStatus, onComplete }) => {
             onComplete(false);
           }
         }
-      }, 600);
+      }, 800);
     }
   }, [currentChallengeIdx, challenges, onComplete, setStatus]);
 
@@ -150,13 +177,35 @@ const WebcamScanner: React.FC<Props> = ({ status, setStatus, onComplete }) => {
     return () => clearTimeout(timer);
   }, [status, currentChallengeIdx, handleNextChallenge]);
 
-  if (!engineReady && status !== VerificationStatus.COLLECTING_DATA) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full w-full bg-black space-y-4">
-        <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
-        <p className="text-xs text-zinc-500 mono uppercase tracking-widest">Loading Biometric Sub-Systems...</p>
-      </div>
-    );
+  // Loading States
+  if (status !== VerificationStatus.COLLECTING_DATA) {
+    if (engineState === 'loading') {
+      return (
+        <div className="flex flex-col items-center justify-center h-full w-full bg-black space-y-4">
+          <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
+          <p className="text-xs text-zinc-500 mono uppercase tracking-widest">Warming Biometric Pipeline...</p>
+        </div>
+      );
+    }
+    if (engineState === 'denied') {
+      return (
+        <div className="flex flex-col items-center justify-center h-full w-full bg-black space-y-4 px-8 text-center">
+          <CameraOff className="w-12 h-12 text-red-500 mb-2" />
+          <h3 className="font-bold text-lg text-white">ACCESS DENIED</h3>
+          <p className="text-sm text-zinc-400">The Vault requires camera permissions for MFPL verification. Please reset permissions in your browser bar.</p>
+        </div>
+      );
+    }
+    if (engineState === 'error') {
+      return (
+        <div className="flex flex-col items-center justify-center h-full w-full bg-black space-y-4 px-8 text-center">
+          <AlertTriangle className="w-12 h-12 text-yellow-500 mb-2" />
+          <h3 className="font-bold text-lg text-white">SYSTEM ANOMALY</h3>
+          <p className="text-sm text-zinc-400">MediaPipe failed to initialize. This usually happens if scripts are blocked or on an unsupported browser.</p>
+          <button onClick={() => window.location.reload()} className="mt-4 px-6 py-2 bg-blue-600 rounded-lg text-xs font-bold uppercase tracking-wider">Retry Initialization</button>
+        </div>
+      );
+    }
   }
 
   return (
