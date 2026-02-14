@@ -1,0 +1,7 @@
+{
+  "name": "The Vault: Anti-Deepfake Identity System",
+  "description": "A high-security biometric identity verification system using Multi-Factor Proof of Life (MFPL), MediaPipe Face Mesh, and Gemini Multimodal analysis to prevent deepfake injection attacks and secure high-value digital assets.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
